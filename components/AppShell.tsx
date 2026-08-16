@@ -11,6 +11,7 @@ import { openFileTab, saveFileViewerState } from "./file-tab-state";
 import { ModelsConfig } from "./ModelsConfig";
 import { SkillsConfig } from "./SkillsConfig";
 import { PluginsConfig } from "./PluginsConfig";
+import { AgentsConfig } from "./AgentsConfig";
 import { ProjectTrustDialog } from "./ProjectTrustDialog";
 import { BranchNavigator } from "./BranchNavigator";
 import { useTheme } from "@/hooks/useTheme";
@@ -102,6 +103,7 @@ export function AppShell() {
   const [modelsRefreshKey, setModelsRefreshKey] = useState(0);
   const [skillsConfigOpen, setSkillsConfigOpen] = useState(false);
   const [pluginsConfigOpen, setPluginsConfigOpen] = useState(false);
+  const [agentsConfigOpen, setAgentsConfigOpen] = useState(false);
   const [projectTrust, setProjectTrust] = useState<ProjectTrustStatus | null>(null);
   const [projectTrustDialogOpen, setProjectTrustDialogOpen] = useState(false);
   const [projectTrustBusy, setProjectTrustBusy] = useState(false);
@@ -630,6 +632,17 @@ export function AppShell() {
       .catch(() => {});
   }, []);
 
+  const handleOpenSession = useCallback(async (sessionId: string) => {
+    try {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { cache: "no-store" });
+      const data = await response.json() as { info?: SessionInfo; error?: string };
+      if (!response.ok || !data.info) throw new Error(data.error ?? `HTTP ${response.status}`);
+      handleSelectSession(data.info);
+    } catch (error) {
+      console.error("[pi-web] failed to open session:", error instanceof Error ? error.message : error);
+    }
+  }, [handleSelectSession]);
+
   // Called by ChatWindow when a new session gets its real id from pi
   const handleSessionCreated = useCallback((session: SessionInfo, sourceDraftKey: string) => {
     setRefreshKey((k) => k + 1);
@@ -951,6 +964,18 @@ export function AppShell() {
                 <path d="M12 2L2 7l10 5 10-5-10-5z" />
                 <path d="M2 17l10 5 10-5" />
                 <path d="M2 12l10 5 10-5" />
+              </svg>
+            ),
+          },
+          {
+             label: translate("common.agents"),
+            onClick: () => setAgentsConfigOpen(true),
+            disabled: !activeCwd && !selectedSession?.cwd && !newSessionCwd,
+            icon: (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="8" r="4" />
+                <path d="M4 21a8 8 0 0 1 16 0" />
+                <path d="M19 5v4" /><path d="M17 7h4" />
               </svg>
             ),
           },
@@ -2097,6 +2122,7 @@ export function AppShell() {
               onSessionStatsPanelOpen={openSessionStatsPanel}
               onContextUsageChange={handleContextUsageChange}
               onOpenFile={handleOpenLinkedFile}
+              onOpenSession={handleOpenSession}
               soundEnabled={soundEnabled}
               onSoundToggle={onSoundToggle}
               playDoneSound={playDoneSound}
@@ -2261,6 +2287,9 @@ export function AppShell() {
     )}
     {skillsConfigOpen && projectTrustCwd && (
       <SkillsConfig cwd={projectTrustCwd} onClose={() => setSkillsConfigOpen(false)} />
+    )}
+    {agentsConfigOpen && projectTrustCwd && (
+      <AgentsConfig cwd={projectTrustCwd} onClose={() => setAgentsConfigOpen(false)} />
     )}
     {pluginsConfigOpen && projectTrustCwd && (
       <PluginsConfig

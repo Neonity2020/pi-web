@@ -14,6 +14,7 @@ import { sessionPathKey } from "@/lib/session-path";
 import { getRpcSession } from "@/lib/rpc-manager";
 import { projectTreeForResponse } from "@/lib/project-tree";
 import { computeSessionTotalActiveMs } from "@/lib/session-timing";
+import { readSubagentRun } from "@/lib/subagents";
 
 export async function GET(
   req: Request,
@@ -45,6 +46,9 @@ export async function GET(
     const parentSessionId = header?.parentSession
       ? await resolveSessionIdByPath(header.parentSession)
       : undefined;
+    const subagent = header
+      ? readSubagentRun(entries as never, header.id, filePath)
+      : null;
     const info = header ? {
       path: filePath,
       id: header.id,
@@ -61,6 +65,11 @@ export async function GET(
           })()
         : "(no messages)",
       parentSessionId,
+      ...(subagent
+        ? { relation: { kind: "subagent" as const, parentSessionId: subagent.parentSessionId, profile: subagent.profile, description: subagent.description } }
+        : header.parentSession
+          ? { relation: { kind: "fork" as const, ...(parentSessionId ? { originSessionId: parentSessionId } : {}) } }
+          : {}),
       transient: !filePath || !existsSync(filePath),
     } : null;
 
