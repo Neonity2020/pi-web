@@ -14,7 +14,7 @@ import { sessionPathKey } from "@/lib/session-path";
 import { getRpcSession } from "@/lib/rpc-manager";
 import { projectTreeForResponse } from "@/lib/project-tree";
 import { computeSessionTotalActiveMs } from "@/lib/session-timing";
-import { readSubagentRun } from "@/lib/subagents";
+import { readSubagentRun, SUBAGENT_META_TYPE } from "@/lib/subagents";
 
 export async function GET(
   req: Request,
@@ -125,6 +125,9 @@ export async function DELETE(
 
     // Read only the bounded header before deleting.
     const parentSessionPath = readSessionHeader(filePath)?.parentSession;
+    const parentSessionId = parentSessionPath
+      ? readSessionHeader(parentSessionPath)?.id
+      : undefined;
 
     // Re-attach all direct children to this session's parent (cascade re-parent)
     // Scan sibling files in the same directory
@@ -148,6 +151,30 @@ export async function DELETE(
             // Rewrite header with new parentSession
             header.parentSession = parentSessionPath;
             lines[0] = JSON.stringify(header);
+            if (parentSessionPath && parentSessionId) {
+              for (let index = 1; index < lines.length; index += 1) {
+                let entry: { type?: string; customType?: string; data?: unknown };
+                try {
+                  entry = JSON.parse(lines[index]);
+                } catch {
+                  continue;
+                }
+                if (
+                  entry.type !== "custom"
+                  || entry.customType !== SUBAGENT_META_TYPE
+                  || typeof entry.data !== "object"
+                  || entry.data === null
+                  || Array.isArray(entry.data)
+                ) continue;
+                entry.data = {
+                  ...entry.data,
+                  parentSessionId,
+                  parentSessionPath,
+                };
+                lines[index] = JSON.stringify(entry);
+                break;
+              }
+            }
             writeFileSync(childPath, lines.join("\n"));
           }
         } catch { /* skip malformed */ }
