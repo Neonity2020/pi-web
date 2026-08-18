@@ -370,11 +370,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }
 
   const setToolPresetState = opts.setToolPreset ?? setToolPreset;
+  const existingSessionId = session?.id;
 
   useLayoutEffect(() => {
-    if (!isNew || sessionIdRef.current) return;
+    if (!existingSessionId && (!isNew || sessionIdRef.current)) return;
     setToolPresetState(getPreferredToolPreset());
-  }, [isNew, setToolPresetState]);
+  }, [existingSessionId, isNew, setToolPresetState]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     const container = scrollContainerRef.current;
@@ -1332,6 +1333,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         await sendAgentCommand(session.id, {
           type: "prompt",
           message,
+          toolNames: getToolNamesForPreset(toolPreset),
           ...(piImages?.length ? { images: piImages } : {}),
         });
       } else {
@@ -1373,7 +1375,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentPhase(null);
       dispatch({ type: "end" });
     }
-  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, reconcileAgentState, restoreSubmission]);
+  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, reconcileAgentState, restoreSubmission, toolPreset]);
 
   const executeBash = useCallback(async (command: string, excludeFromContext: boolean) => {
     if (agentRunningRef.current || bashRunningRef.current) return;
