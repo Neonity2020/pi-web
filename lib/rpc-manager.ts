@@ -670,8 +670,7 @@ export class AgentSessionWrapper {
         const all: ToolInfo[] = this.inner.getAllTools();
         const active = new Set<string>(this.inner.getActiveToolNames());
         return all.map((t) => ({
-          name: t.name,
-          description: t.description,
+          ...t,
           active: active.has(t.name),
         }));
       }
