@@ -34,6 +34,7 @@ import {
   listSubagentProfiles,
   readSubagentRun,
   readSubagentSessionResources,
+  SUBAGENT_CONTROL_TOOL_NAMES,
 } from "./subagents";
 import { createSubagentController } from "./subagent-runtime";
 import { isBuiltInSubagentsEnabled } from "./subagent-settings";
@@ -1785,7 +1786,10 @@ export async function startRpcSession(
   if (!subagentResources && persistedToolNames === undefined && requestedToolNames !== undefined) {
     appendSessionToolSelection(sessionManager, requestedToolNames);
   }
-  const chatOnly = selectedToolNames?.length === 0;
+  const subagentLoadsResources = Boolean(
+    subagentResources?.loadExtensions || subagentResources?.loadSkills,
+  );
+  const chatOnly = selectedToolNames?.length === 0 && !subagentLoadsResources;
   const finishStartingSession = trackStartingSession(sessionCwd);
   const starting = (async () => {
     // Some extensions access the SDK's global theme even outside the terminal UI.
@@ -1810,9 +1814,13 @@ export async function startRpcSession(
     // before the SDK restores the saved model from the session file.
     // Gate untrusted project extensions so opening a repository does not run
     // its .pi/extensions code automatically (see lib/project-trust.ts, #236).
-    const trustReloadOptions = subagentResources || chatOnly
-      ? undefined
-      : projectTrustReloadOptions(sessionCwd, agentDir);
+    const trustReloadOptions = subagentResources
+      ? subagentLoadsResources
+        ? projectTrustReloadOptions(sessionCwd, agentDir)
+        : undefined
+      : chatOnly
+        ? undefined
+        : projectTrustReloadOptions(sessionCwd, agentDir);
     const settingsManager = SettingsManager.create(sessionCwd, agentDir);
     const services = await createAgentSessionServices({
       cwd: sessionCwd,
@@ -1820,8 +1828,8 @@ export async function startRpcSession(
       settingsManager,
       resourceLoaderOptions: subagentResources
         ? {
-            noExtensions: true,
-            noSkills: true,
+            noExtensions: !subagentResources.loadExtensions,
+            noSkills: !subagentResources.loadSkills,
             noPromptTemplates: true,
             noThemes: true,
             noContextFiles: true,
@@ -1880,6 +1888,7 @@ export async function startRpcSession(
       ...(initial.thinkingLevel ? { thinkingLevel: initial.thinkingLevel } : {}),
       ...(initial.scopedModels.length > 0 ? { scopedModels: initial.scopedModels } : {}),
       ...(toolsOption !== undefined ? { tools: toolsOption } : {}),
+      ...(subagentResources ? { excludeTools: [...SUBAGENT_CONTROL_TOOL_NAMES] } : {}),
     });
 
     const persistedPreferences = await persistExplicitStartupPreferences(
