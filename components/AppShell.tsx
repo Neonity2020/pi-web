@@ -702,6 +702,7 @@ export function AppShell() {
     setExplorerRefreshKey((k) => k + 1);
     if (selectedSession) hydrateSelectedSession(selectedSession.id);
 
+    if (selectedSession?.relation?.kind === "subagent") return;
     if (!shouldShowBrowserNotification()) return;
     const targetSession = selectedSession;
     deliverSessionNotification({
@@ -712,6 +713,7 @@ export function AppShell() {
   }, [deliverSessionNotification, hydrateSelectedSession, selectedSession, translate]);
 
   const handleAttentionNeeded = useCallback((request: BlockingExtensionUiRequest) => {
+    if (selectedSession?.relation?.kind === "subagent") return;
     if (!shouldShowBrowserNotification()) return;
     if (!claimExtensionAttentionNotification(request, notifiedAttentionRequestIdsRef.current)) return;
 

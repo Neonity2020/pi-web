@@ -107,6 +107,7 @@ type ExtensionCommandContextActionsLike = {
 type AgentSessionWrapperOptions = {
   exactSystemPrompt?: () => string;
   chatOnly?: boolean;
+  suppressCompletionNotifications?: boolean;
 };
 
 const RUNNING_STATE_EVENT_TYPES = new Set([
@@ -198,6 +199,7 @@ export class AgentSessionWrapper {
   private extensionBindingError: unknown = null;
   private readonly exactSystemPrompt?: () => string;
   private readonly chatOnly: boolean;
+  private readonly suppressCompletionNotifications: boolean;
   private unsubscribe: (() => void) | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private onDestroyCallback: (() => void) | null = null;
@@ -210,6 +212,7 @@ export class AgentSessionWrapper {
   ) {
     this.exactSystemPrompt = options.exactSystemPrompt;
     this.chatOnly = options.chatOnly ?? false;
+    this.suppressCompletionNotifications = options.suppressCompletionNotifications ?? false;
     this.installExactSystemPromptContinuation();
     this.applyExactSystemPrompt();
   }
@@ -244,6 +247,10 @@ export class AgentSessionWrapper {
 
   isChatOnly(): boolean {
     return this.chatOnly;
+  }
+
+  hasSuppressedCompletionNotifications(): boolean {
+    return this.suppressCompletionNotifications;
   }
 
   start(): void {
@@ -1449,6 +1456,7 @@ const SUBAGENT_CONTROLLER = createSubagentController({
         ? { exactSystemPrompt: () => options.exactSystemPrompt! }
         : {}),
       chatOnly: options?.chatOnly,
+      suppressCompletionNotifications: true,
     });
     registerRpcWrapper(wrapper);
   },
@@ -1674,6 +1682,16 @@ export function getRunningRpcSessionIds(): string[] {
   return [...ids];
 }
 
+export function getCompletionNotificationSuppressedRpcSessionIds(): string[] {
+  const ids = new Set<string>();
+  for (const [sessionId, session] of getRegistry()) {
+    if (session.isRunning() && session.hasSuppressedCompletionNotifications()) {
+      ids.add(session.sessionId || sessionId);
+    }
+  }
+  return [...ids];
+}
+
 // ----------------------------------------------------------------------------
 // Running-status broadcaster
 //
@@ -1885,7 +1903,11 @@ export async function startRpcSession(
         ? () => subagentResources.appendSystemPrompt[0] ?? ""
         : () => contextFilesSystemPrompt(inner.resourceLoader.getAgentsFiles().agentsFiles)
       : undefined;
-    const wrapper = new AgentSessionWrapper(inner, { exactSystemPrompt, chatOnly });
+    const wrapper = new AgentSessionWrapper(inner, {
+      exactSystemPrompt,
+      chatOnly,
+      suppressCompletionNotifications: Boolean(subagentResources),
+    });
     const realSessionId = inner.sessionId as string;
     registerRpcWrapper(wrapper);
 
