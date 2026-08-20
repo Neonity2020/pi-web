@@ -287,6 +287,14 @@ export interface BranchPreview {
   text: string;
 }
 
+export type SubagentSessionStatus =
+  | "starting"
+  | "running"
+  | "completed"
+  | "failed"
+  | "aborted"
+  | "interrupted";
+
 export interface SessionTreeNode {
   entry: SessionEntry;
   children: SessionTreeNode[];
@@ -309,7 +317,13 @@ export interface SessionInfo {
    *  UI; only subagent relations form a visible parent/child tree. */
   relation?:
     | { kind: "fork"; originSessionId?: string }
-    | { kind: "subagent"; parentSessionId: string; profile: string; description: string };
+    | {
+        kind: "subagent";
+        parentSessionId: string;
+        profile: string;
+        description: string;
+        status: SubagentSessionStatus;
+      };
   /** Main repo root shared by all worktrees of this cwd (cwd itself for non-git dirs).
    *  Always set by the server; optional because the client builds transient
    *  SessionInfo objects before the first refresh. Fall back to cwd. */
