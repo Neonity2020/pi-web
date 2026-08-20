@@ -100,11 +100,11 @@ function getLabel(entry: SessionEntry): string {
 }
 
 // Does the tree have any branching at all?
-function hasBranch(nodes: SessionTreeNode[]): boolean {
+export function hasSessionBranches(nodes: SessionTreeNode[]): boolean {
   if (nodes.length > 1) return true;
   for (const node of nodes) {
     if (node.children.length > 1) return true;
-    if (hasBranch(node.children)) return true;
+    if (hasSessionBranches(node.children)) return true;
   }
   return false;
 }
@@ -279,7 +279,7 @@ export function BranchNavigator({ tree, activeLeafId, onLeafChange, inline, cont
 
   const noBranchReason = !hasSession
     ? t("i18n.noActiveSession")
-    : !hasBranch(tree)
+    : !hasSessionBranches(tree)
       ? t("i18n.noBranches")
       : null;
 

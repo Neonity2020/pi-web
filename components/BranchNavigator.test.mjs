@@ -6,7 +6,7 @@ const jiti = createJiti(import.meta.url, {
   jsx: { runtime: "automatic" },
   tsconfigPaths: true,
 });
-const { compressChain, selectTopLevelBranches } = await jiti.import("./BranchNavigator.tsx");
+const { compressChain, hasSessionBranches, selectTopLevelBranches } = await jiti.import("./BranchNavigator.tsx");
 
 const msg = (id, role, text) => ({ type: "message", id, parentId: null, timestamp: "t", message: { role, content: text } });
 const info = (id) => ({ type: "session_info", id, parentId: null, timestamp: "t", name: "x" });
@@ -64,6 +64,21 @@ test("selectTopLevelBranches returns children of the first branching node", () =
 test("selectTopLevelBranches returns empty for a linear session", () => {
   const root = node(msg("u1", "user", "第一问"), [node(msg("a1", "assistant", "答"))]);
   assert.deepEqual(selectTopLevelBranches([root]), []);
+});
+
+test("hasSessionBranches distinguishes linear sessions from branched sessions", () => {
+  const linear = node(msg("u1", "user", "第一问"), [node(msg("a1", "assistant", "答"))]);
+  const branched = node(msg("u1", "user", "第一问"), [
+    node(msg("a1", "assistant", "答"), [
+      node(msg("u2", "user", "分支一")),
+      node(msg("u2b", "user", "分支二")),
+    ]),
+  ]);
+
+  assert.equal(hasSessionBranches([]), false);
+  assert.equal(hasSessionBranches([linear]), false);
+  assert.equal(hasSessionBranches([branched]), true);
+  assert.equal(hasSessionBranches([linear, branched]), true);
 });
 
 test("selectTopLevelBranches works on preview-only server projections", () => {
