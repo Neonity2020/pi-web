@@ -1,4 +1,8 @@
 export const TEXT_PREVIEW_MAX_BYTES = 256 * 1024;
+// The viewer reads text in chunks so a huge file cannot exhaust memory. The
+// markdown editor needs the whole document instead, so its read and write paths
+// are bounded by this separate, larger limit.
+export const TEXT_EDIT_MAX_BYTES = 2 * 1024 * 1024;
 export const IMAGE_PREVIEW_MAX_BYTES = 10 * 1024 * 1024;
 export const DOCX_PREVIEW_MAX_BYTES = 10 * 1024 * 1024;
 

@@ -1,10 +1,15 @@
 import fs from "fs";
-import { TEXT_PREVIEW_MAX_BYTES } from "./file-types";
+import { TEXT_EDIT_MAX_BYTES, TEXT_PREVIEW_MAX_BYTES } from "./file-types";
 
 export interface TextPreviewChunk {
   content: string;
   nextOffset: number;
   truncated: boolean;
+}
+
+export interface TextFullContent {
+  content: string;
+  size: number;
 }
 
 function utf8SequenceLength(byte: number): number {
@@ -46,4 +51,33 @@ export function readTextPreviewChunk(
     nextOffset,
     truncated: nextOffset < fileSize,
   };
+}
+
+/**
+ * Read a whole text file. Preview reads are chunked because a file can be far
+ * larger than memory should hold; the editor instead loads the entire document
+ * once and later writes it back, so the read is bounded by TEXT_EDIT_MAX_BYTES
+ * and `exceededLimit` tells the caller to keep the editor closed.
+ */
+export function readFullTextFile(
+  filePath: string,
+  maxBytes: number = TEXT_EDIT_MAX_BYTES,
+): TextFullContent & { exceededLimit: boolean } {
+  const stat = fs.statSync(filePath);
+  if (stat.size > maxBytes) {
+    return { content: "", size: stat.size, exceededLimit: true };
+  }
+
+  const descriptor = fs.openSync(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(stat.size);
+    const bytesRead = fs.readSync(descriptor, buffer, 0, stat.size, 0);
+    return {
+      content: buffer.toString("utf8", 0, bytesRead),
+      size: stat.size,
+      exceededLimit: false,
+    };
+  } finally {
+    fs.closeSync(descriptor);
+  }
 }

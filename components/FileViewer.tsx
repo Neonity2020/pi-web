@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback, useMemo, type CSSProperties, type MouseEvent } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo, type CSSProperties } from "react";
 import {
   Prism as SyntaxHighlighter,
   createElement as renderSyntaxNode,
@@ -8,7 +8,6 @@ import {
 } from "react-syntax-highlighter";
 import { vs } from "react-syntax-highlighter/dist/cjs/styles/prism";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/cjs/styles/prism";
-import ReactMarkdown from "react-markdown";
 import { useTheme } from "@/hooks/useTheme";
 import {
   DOCX_PREVIEW_MAX_BYTES,
@@ -18,16 +17,18 @@ import {
   isImagePath,
   isVideoPath,
 } from "@/lib/file-types";
-import { encodeFilePathForApi, getFileDirectory, getFileName, getRelativeFilePath } from "@/lib/file-paths";
-import { parsePdfPageFragment, resolveLocalFileHref, shouldOpenLocalFileInApp } from "@/lib/file-links";
+import { getFileDirectory, getFileName, getRelativeFilePath } from "@/lib/file-paths";
 import { parseFrontmatter } from "@/lib/frontmatter";
-import { markdownPreviewRehypePlugins, markdownPreviewRemarkPlugins, markdownUrlTransform, normalizeDisplayMath } from "@/lib/markdown";
-import { CodeBlock, MermaidBlock } from "./MermaidBlock";
+import { getFileApiUrl } from "@/lib/file-api-url";
+import { MarkdownEditor, type MarkdownSaveResult } from "./MarkdownEditor";
+import { MarkdownDocument } from "./markdown-document";
+import { normalizeDisplayMath } from "@/lib/markdown";
 import { FrontmatterCard } from "./FrontmatterCard";
 import { parseUnifiedPatch } from "@/lib/patch";
 import type { GitFileDiffResponse } from "@/lib/git-types";
 import { useI18n } from "@/hooks/useI18n";
 import {
+  isMarkdownEditable,
   resolveInitialFileDisplayMode,
   type FileViewerDisplayMode as DisplayMode,
   type FileViewerState,
@@ -58,14 +59,13 @@ interface FileData {
   size: number;
   nextOffset: number;
   truncated: boolean;
+  /** mtimeMs of the read, the base stamp the editor validates a save against. */
+  mtimeMs?: number;
 }
 
 const SOURCE_HIGHLIGHT_MAX_LINES = 1_000;
-const DISPLAY_MODE_LABELS: Record<DisplayMode, string> = {
-  source: "Source",
-  preview: "Preview",
-  diff: "Diff",
-};
+// The mode labels are translated through i18n.source/i18n.preview/i18n.edit/
+// i18n.diff so a localized UI does not mix untranslated mode names in.
 
 const FILE_CODE_STYLE: CSSProperties = {
   fontFamily: "var(--font-mono)",
@@ -210,20 +210,6 @@ function SourceCodeRenderer({ rows, stylesheet, useInlineStyles, wrapLines }: So
   });
 }
 
-function getFileApiUrl(
-  filePath: string,
-  type: "read" | "download" | "meta" | "preview" | "watch",
-  sourceSessionId?: string | null,
-  params: Record<string, string | number | undefined> = {},
-): string {
-  const encoded = encodeFilePathForApi(filePath);
-  const searchParams = new URLSearchParams({ type });
-  if (sourceSessionId) searchParams.set("sessionId", sourceSessionId);
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined) searchParams.set(key, String(value));
-  }
-  return `/api/files/${encoded}?${searchParams.toString()}`;
-}
 
 function DownloadLink({ filePath, sourceSessionId }: { filePath: string; sourceSessionId?: string | null }) {
   const { t } = useI18n();
@@ -446,7 +432,7 @@ function ImageViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
     setNaturalSize(null);
     setError(null);
     setWatching(false);
-  }, [filePath, sourceSessionId]);
+  }, [filePath]);
 
   useEffect(() => {
     setWatching(false);
@@ -1170,6 +1156,15 @@ function TextFileViewer({
   });
   const onStateChangeRef = useRef(onStateChange);
   const [selectedLineRange, setSelectedLineRange] = useState<SelectedLineRange | null>(null);
+  // The editor reads the whole document once, because the chunked preview read
+  // would hand it a truncated file that saving would turn into data loss.
+  const [editDocument, setEditDocument] = useState<{ content: string; mtimeMs: number } | null>(null);
+  const [editLoadError, setEditLoadError] = useState<string | null>(null);
+  // Remounts the editor so a reload after a conflict starts from the file the
+  // server now holds, not from the buffer the user typed into.
+  const [editReloadKey, setEditReloadKey] = useState(0);
+  const editRequestRef = useRef(0);
+  const editStateRef = useRef<"idle" | "loading" | "loaded" | "error">("idle");
 
   onStateChangeRef.current = onStateChange;
 
@@ -1289,7 +1284,12 @@ function TextFileViewer({
       esRef.current = null;
     }
 
-    if (!watchEnabled) return;
+    // Markdown is the one kind the user edits by hand. Reloading it underneath
+    // the editor would discard unsaved work, and an agent editing the file at
+    // the same time is a conflict the user resolves on save, so this viewer
+    // never live-refreshes markdown at all. `data?.language` is read instead of
+    // the `language` alias because that one is declared further down.
+    if (!watchEnabled || data?.language === "markdown") return;
 
     const synchronize = () => {
       void fetchContent(filePath);
@@ -1318,11 +1318,12 @@ function TextFileViewer({
       es.close();
       if (esRef.current === es) esRef.current = null;
     };
-  }, [filePath, fetchContent, fetchGitDiff, sourceSessionId, watchEnabled]);
+  }, [filePath, fetchContent, fetchGitDiff, sourceSessionId, watchEnabled, data?.language]);
 
   useEffect(() => {
     void fetchGitDiff(filePath);
   }, [fetchGitDiff, filePath, gitRefreshKey]);
+
 
   useEffect(() => {
     // HTML gets the same rendered-first treatment as markdown: a generated page
@@ -1442,6 +1443,76 @@ function TextFileViewer({
     [sourceLines, useLightweightSource, wrapLines],
   );
 
+  // A changed file identity invalidates the loaded editor document; the next
+  // edit-mode request loads the new file from scratch.
+  useEffect(() => {
+    editStateRef.current = "idle";
+    editRequestRef.current += 1;
+    setEditDocument(null);
+    setEditLoadError(null);
+  }, [filePath, sourceSessionId]);
+
+  // Guarded by a ref, not by state: the request's own setLoading would otherwise
+  // re-run this effect, cancel the in-flight read and leave the editor spinning.
+  useEffect(() => {
+    if (effectiveDisplayMode !== "edit" || data?.language !== "markdown") return;
+    if (editStateRef.current !== "idle") return;
+    editStateRef.current = "loading";
+
+    let active = true;
+    const requestId = ++editRequestRef.current;
+    fetch(getFileApiUrl(filePath, "read", sourceSessionId, { full: 1 }))
+      .then((response) => response.json())
+      .then((next: FileData & { error?: string }) => {
+        if (!active || requestId !== editRequestRef.current) return;
+        if (next.error) {
+          editStateRef.current = "error";
+          setEditLoadError(next.error);
+          return;
+        }
+        editStateRef.current = "loaded";
+        setEditDocument({ content: next.content, mtimeMs: next.mtimeMs ?? 0 });
+      })
+      .catch((nextError) => {
+        if (!active || requestId !== editRequestRef.current) return;
+        editStateRef.current = "error";
+        setEditLoadError(String(nextError));
+      })
+
+    return () => {
+      active = false;
+    };
+  }, [effectiveDisplayMode, data?.language, filePath, sourceSessionId]);
+
+  const handleRequestEditReload = useCallback(() => {
+    editStateRef.current = "idle";
+    setEditDocument(null);
+    setEditLoadError(null);
+    setEditReloadKey((key) => key + 1);
+  }, []);
+
+  const saveMarkdown = useCallback(async (
+    content: string,
+    baseMtimeMs: number,
+  ): Promise<MarkdownSaveResult> => {
+    try {
+      const response = await fetch(getFileApiUrl(filePath, "write"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content, baseMtimeMs }),
+      });
+      const body = await response.json().catch(() => null) as
+        { error?: string; conflict?: boolean; mtimeMs?: number; size?: number } | null;
+      if (response.ok && body) return { ok: true, mtimeMs: body.mtimeMs ?? baseMtimeMs, size: body.size ?? 0 };
+      if (response.status === 409 && body?.conflict) return { ok: false, reason: "conflict", mtimeMs: body.mtimeMs ?? 0 };
+      return { ok: false, reason: "error", message: body?.error ?? String(response.status) };
+    } catch (nextError) {
+      return { ok: false, reason: "error", message: String(nextError) };
+    }
+    // The write endpoint authorizes against the allowed roots, not the session,
+    // so no session id travels with the save.
+  }, [filePath]);
+
   useEffect(() => {
     const updateSelectedLineRange = () => {
       const root = contentRef.current;
@@ -1538,16 +1609,23 @@ function TextFileViewer({
   const content = viewerContent;
   const markdownDirectory = getFileDirectory(filePath);
   const lines = sourceLines;
+  // The editor needs the whole document, so a truncated preview (the viewer only
+  // reads the first 256KB) can never be edited — it would save back a file with
+  // its tail cut off.
+  const markdownEditable = isMarkdownEditable(data?.language, data?.truncated, data?.size);
   const displayModes: DisplayMode[] = isDeletedDiff
     ? ["diff"]
     : [
         "source",
         ...(hasPreview ? ["preview" as const] : []),
+        ...(markdownEditable ? ["edit" as const] : []),
         ...(hasGitDiff ? ["diff" as const] : []),
       ];
   const metadata = isDeletedDiff
     ? t("files.deleted")
-    : `${language} · ${lines.length} lines · ${formatSize(data!.size)}`;
+    : isMarkdown && !markdownEditable
+      ? `${language} · ${lines.length} lines · ${formatSize(data!.size)} · ${t("editor.tooLarge")}`
+      : `${language} · ${lines.length} lines · ${formatSize(data!.size)}`;
 
   return (
     <div className="file-viewer-shell" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", position: "relative" }}>
@@ -1572,8 +1650,16 @@ function TextFileViewer({
         <span className="file-viewer-meta" title={metadata}>{metadata}</span>
         {!isDeletedDiff && (
           <span
-            title={watching ? t("i18n.liveSync") : t("i18n.notWatching")}
-            aria-label={watching ? t("i18n.liveSync") : t("i18n.notWatching")}
+            title={watching
+              ? t("i18n.liveSync")
+              : isMarkdown
+                ? t("editor.noLiveSync")
+                : t("i18n.notWatching")}
+            aria-label={watching
+              ? t("i18n.liveSync")
+              : isMarkdown
+                ? t("editor.noLiveSync")
+                : t("i18n.notWatching")}
             className="file-viewer-live-indicator"
             style={{
               background: watching ? "#4ade80" : "var(--border)",
@@ -1600,7 +1686,7 @@ function TextFileViewer({
                       color: active ? "var(--text)" : "var(--text-muted)",
                     }}
                   >
-                    {DISPLAY_MODE_LABELS[mode]}
+                    {t(`i18n.${mode}`)}
                   </button>
                 );
               })}
@@ -1703,7 +1789,37 @@ function TextFileViewer({
         }}
         style={{ flex: 1, overflow: "auto", background: "var(--bg)", paddingBottom: data?.truncated ? 48 : undefined }}
       >
-        {effectiveDisplayMode === "diff" && hasGitDiff ? (
+        {effectiveDisplayMode === "edit" && markdownEditable ? (
+          editLoadError ? (
+            <div style={{ padding: 24, color: "#f87171", fontSize: 13 }}>{editLoadError}</div>
+          ) : editDocument ? (
+            <MarkdownEditor
+              key={`${filePath}:${editReloadKey}`}
+              fileDirectory={getFileDirectory(filePath)}
+              cwd={cwd}
+              sourceSessionId={sourceSessionId}
+              initialContent={editDocument.content}
+              baseMtimeMs={editDocument.mtimeMs}
+              onSave={async (content, baseMtimeMs) => {
+                const result = await saveMarkdown(content, baseMtimeMs);
+                // Keep the saved stamp as the new base, otherwise leaving and
+                // re-entering edit mode remounts the editor with the stamp the
+                // file was loaded with and the next save is refused as a
+                // conflict with the version this very editor just wrote.
+                if (result.ok) {
+                  setEditDocument((current) => (current ? { ...current, mtimeMs: result.mtimeMs } : current));
+                }
+                return result;
+              }}
+              onOpenFile={onOpenFile}
+              onRequestReload={handleRequestEditReload}
+            />
+          ) : (
+            <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: 13 }}>
+              {t("i18n.loading")}
+            </div>
+          )
+        ) : effectiveDisplayMode === "diff" && hasGitDiff ? (
           <DiffView patch={gitDiff.patch!} />
         ) : isHtml && effectiveDisplayMode === "preview" ? (
           <iframe
@@ -1718,65 +1834,15 @@ function TextFileViewer({
             style={{ padding: "24px 32px" }}
           >
             {frontmatter?.data && <FrontmatterCard data={frontmatter.data} />}
-            <ReactMarkdown
-              remarkPlugins={markdownPreviewRemarkPlugins}
-              rehypePlugins={markdownPreviewRehypePlugins}
-              urlTransform={onOpenFile ? markdownUrlTransform : undefined}
-              components={{
-                code({ className, children, ...props }) {
-                  const lang = className?.replace("language-", "").toLowerCase() ?? "";
-                  const raw = String(children);
-                  const isBlock = className?.includes("language-") || raw.includes("\n");
-                  if (isBlock) {
-                    if (lang === "mermaid") {
-                      return <MermaidBlock code={raw.replace(/\n$/, "")} defaultPreview />;
-                    }
-                    return <CodeBlock code={raw.replace(/\n$/, "")} lang={lang} />;
-                  }
-                  return (
-                    <code className={className} {...props}>
-                      {children}
-                    </code>
-                  );
-                },
-                pre({ children }) {
-                  // Render the code block directly — CodeBlock provides its own wrapping.
-                  // For non-mermaid blocks, pass through to default pre rendering.
-                  return <>{children}</>;
-                },
-                a({ href, children, ...props }) {
-                  delete props.node;
-                  const linkedFile = onOpenFile
-                    ? resolveLocalFileHref(href, markdownDirectory, cwd ?? markdownDirectory)
-                    : null;
-                  if (!linkedFile || !onOpenFile) {
-                    return <a href={href} {...props}>{children}</a>;
-                  }
-
-                  const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
-                    if (!shouldOpenLocalFileInApp(event)) return;
-                    event.preventDefault();
-                    onOpenFile(linkedFile, parsePdfPageFragment(href) ?? undefined);
-                  };
-
-                  return <a href={href} {...props} onClick={handleClick}>{children}</a>;
-                },
-                img({ src, alt, ...props }) {
-                  delete props.node;
-                  const imagePath = typeof src === "string"
-                    ? resolveLocalFileHref(src, markdownDirectory, cwd ?? markdownDirectory)
-                    : null;
-                  const imageSrc = imagePath
-                    ? getFileApiUrl(imagePath, "read", sourceSessionId)
-                    : src;
-                  // Dynamic local paths are served directly by the file API.
-                  // eslint-disable-next-line @next/next/no-img-element
-                  return <img src={imageSrc} alt={alt ?? ""} loading="lazy" {...props} />;
-                },
+            <MarkdownDocument
+              source={markdownPreview}
+              options={{
+                fileDirectory: markdownDirectory,
+                cwd,
+                sourceSessionId,
+                onOpenFile,
               }}
-            >
-              {markdownPreview}
-            </ReactMarkdown>
+            />
           </div>
         ) : useLightweightSource ? (
           <div

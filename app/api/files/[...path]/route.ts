@@ -25,8 +25,15 @@ import {
   validateUploadFileNames,
 } from "@/lib/file-upload";
 import { parseFormDataWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
+import {
+  hasFileChangedSince,
+  parseFileWriteRequest,
+  resolveWritableTextFile,
+  writeTextFileInPlace,
+} from "@/lib/file-write";
+import { TEXT_EDIT_MAX_BYTES } from "@/lib/file-types";
 import { filePathFromApiSegments, samePath } from "@/lib/paths";
-import { readTextPreviewChunk } from "@/lib/text-preview";
+import { readFullTextFile, readTextPreviewChunk } from "@/lib/text-preview";
 
 const IGNORED_NAMES = new Set([
   "node_modules", ".git", ".next", "dist", "build", "__pycache__",
@@ -39,6 +46,7 @@ const IGNORED_SUFFIXES = [".pyc"];
 const FILE_REQUEST_TYPES = ["list", "read", "download", "meta", "preview", "watch"] as const;
 type FileRequestType = typeof FILE_REQUEST_TYPES[number];
 const FILE_REQUEST_TYPE_SET = new Set<string>(FILE_REQUEST_TYPES);
+const FILE_WRITE_TYPES = new Set<string>(["upload", "upload-check", "write"]);
 const MAX_UPLOAD_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_UPLOAD_TOTAL_BYTES = 100 * 1024 * 1024;
 // Multipart boundaries and headers are not file bytes, but must be bounded too.
@@ -115,6 +123,47 @@ function parseUploadFileNames(value: unknown): string[] | null {
   return value;
 }
 
+async function writeTextFileTarget(request: NextRequest, segments: string[]): Promise<NextResponse> {
+  const filePath = filePathFromApiSegments(segments);
+  const parsed = parseFileWriteRequest(await request.json().catch(() => null));
+  if (!parsed) {
+    return NextResponse.json({ error: "Invalid write request" }, { status: 400 });
+  }
+
+  const allowedRoots = await getAllowedFileRoots();
+  const resolved = resolveWritableTextFile(filePath, allowedRoots);
+  if (!resolved.ok) {
+    return NextResponse.json({ error: resolved.error }, { status: resolved.status });
+  }
+
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(resolved.path);
+  } catch {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  // The editor is not live-synced for markdown, so an edit the agent made in
+  // the background is only visible here. Refuse the save and hand the client
+  // the current stamp so it can offer a reload or an explicit overwrite.
+  if (hasFileChangedSince(parsed.baseMtimeMs, stat.mtimeMs)) {
+    return NextResponse.json(
+      { error: "File changed on disk", conflict: true, mtimeMs: stat.mtimeMs },
+      { status: 409 },
+    );
+  }
+
+  try {
+    const written = writeTextFileInPlace(resolved.path, parsed.content);
+    return NextResponse.json(written);
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 500 },
+    );
+  }
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
@@ -125,10 +174,18 @@ export async function POST(
 
   try {
     const { path: segments } = await params;
+    const type = request.nextUrl.searchParams.get("type") ?? "upload";
+    if (!FILE_WRITE_TYPES.has(type)) {
+      return NextResponse.json({ error: "Invalid upload request type" }, { status: 400 });
+    }
+
+    // Saves target an existing file rather than a directory, so they resolve
+    // and authorize the write before any upload-directory bookkeeping.
+    if (type === "write") return writeTextFileTarget(request, segments);
+
     const uploadDirectory = await getUploadDirectory(segments);
     if ("response" in uploadDirectory) return uploadDirectory.response;
     const { directory } = uploadDirectory;
-    const type = request.nextUrl.searchParams.get("type") ?? "upload";
 
     if (type === "upload-check") {
       const body = await request.json().catch(() => null) as { fileNames?: unknown } | null;
@@ -141,10 +198,6 @@ export async function POST(
         return NextResponse.json({ error: validationError }, { status: 400 });
       }
       return NextResponse.json(inspectUploadTargets(directory, fileNames));
-    }
-
-    if (type !== "upload") {
-      return NextResponse.json({ error: "Invalid upload request type" }, { status: 400 });
     }
 
     const strategy = parseUploadConflictStrategy(request.nextUrl.searchParams.get("conflict"));
@@ -480,6 +533,24 @@ export async function GET(
         return streamFile(filePath, stat, documentMime, request.headers.get("range"));
       }
       const rawOffset = request.nextUrl.searchParams.get("offset");
+      if (request.nextUrl.searchParams.get("full") === "1") {
+        const full = readFullTextFile(filePath);
+        if (full.exceededLimit) {
+          return NextResponse.json(
+            { error: `File too large to edit (>${Math.floor(TEXT_EDIT_MAX_BYTES / 1024 / 1024)}MB)` },
+            { status: 413 },
+          );
+        }
+        const language = getLanguage(filePath);
+        return NextResponse.json({
+          content: full.content,
+          language,
+          size: full.size,
+          nextOffset: full.size,
+          truncated: false,
+          mtimeMs: stat.mtimeMs,
+        });
+      }
       if (rawOffset !== null && !/^\d+$/.test(rawOffset)) {
         return NextResponse.json({ error: "Invalid text preview offset" }, { status: 400 });
       }
@@ -489,7 +560,10 @@ export async function GET(
       }
       const chunk = readTextPreviewChunk(filePath, stat.size, offset);
       const language = getLanguage(filePath);
-      return NextResponse.json({ ...chunk, language, size: stat.size });
+      // mtimeMs is the base stamp the editor locks on when it saves the whole
+      // file: a save against a newer on-disk version is refused instead of
+      // silently overwriting it.
+      return NextResponse.json({ ...chunk, language, size: stat.size, mtimeMs: stat.mtimeMs });
     }
 
     if (type === "download") {

@@ -26,16 +26,38 @@ for (const [name, nextName] of [
 ]) {
   test(`${name} pauses its watcher and synchronizes after connecting`, () => {
     const block = functionBlock(name, nextName);
-    const guard = block.indexOf("if (!watchEnabled) return;");
+    const guard = block.indexOf("if (!watchEnabled");
+    const guardEnd = block.indexOf("return;", guard);
     const eventSource = block.indexOf("new EventSource", guard);
     const synchronize = block.indexOf("synchronize();", eventSource);
 
     assert.ok(guard >= 0, "watchEnabled guard missing");
-    assert.ok(eventSource > guard, "EventSource created before watchEnabled guard");
+    assert.ok(guardEnd > guard, "watchEnabled guard does not return");
+    assert.ok(eventSource > guardEnd, "EventSource created before watchEnabled guard");
     assert.ok(synchronize > eventSource, "connected synchronization missing");
     assert.match(block, /\}, \[[^\]]*watchEnabled[^\]]*\]\);/);
   });
 }
+
+test("TextFileViewer never live-refreshes markdown", () => {
+  const block = functionBlock("TextFileViewer", null);
+
+  // The editor keeps the user's copy, and an agent editing the same file is a
+  // conflict the user resolves on save, so markdown gets no watcher at all.
+  assert.match(block, /if \(!watchEnabled \|\| data\?\.language === "markdown"\) return;/);
+  assert.match(block, /sourceSessionId, watchEnabled, data\?\.language\]/);
+});
+
+test("the markdown editor is offered only for whole, small-enough files", () => {
+  const block = functionBlock("TextFileViewer", null);
+
+  // A truncated preview would save back a file with its tail cut off, and the
+  // editor reads the whole document rather than the 256KB preview chunk.
+  assert.match(block, /const markdownEditable = isMarkdownEditable\(/);
+  assert.match(block, /\.\.\.\(markdownEditable \? \["edit" as const\] : \[\]\)/);
+  assert.match(block, /getFileApiUrl\(filePath, "read", sourceSessionId, \{ full: 1 \}\)/);
+  assert.match(block, /<MarkdownEditor/);
+});
 
 test("FileViewer forwards watcher state to every viewer implementation", () => {
   const block = functionBlock("FileViewer", "TextFileViewer");

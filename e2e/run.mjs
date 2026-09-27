@@ -12,6 +12,7 @@ import { chromium } from "playwright";
 import { checkFilePanel, filePanelFixture } from "./file-panel.mjs";
 import { checkExtensionDialogs, extensionSource } from "./extension-dialog.mjs";
 import { checkChatAppearance } from "./chat-appearance.mjs";
+import { checkMarkdownEditor } from "./markdown-editor.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const mode = process.env.E2E_SERVER_MODE || "dev";
@@ -399,6 +400,7 @@ try {
     await page.goto(`${base}/?session=${RICH}`, { waitUntil: "domcontentloaded" });
     await page.locator(".markdown-code-block pre").waitFor();
     await checkFilePanel(page, previewFile);
+    await checkMarkdownEditor({ page, base, project, sessionId: RICH });
     await checkExtensionDialogs(page, artifacts, viewport.width);
     if (viewport.width > 600) {
       await page.goto(`${base}/?session=${RICH}`, { waitUntil: "domcontentloaded" });

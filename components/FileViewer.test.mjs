@@ -5,6 +5,7 @@ import React from "react";
 import ts from "typescript";
 
 const source = await readFile(new URL("./FileViewer.tsx", import.meta.url), "utf8");
+const documentSource = await readFile(new URL("./markdown-document.tsx", import.meta.url), "utf8");
 
 test("large source previews bypass the per-line syntax highlighter", () => {
   assert.match(source, /const SOURCE_HIGHLIGHT_MAX_LINES = 1_000;/);
@@ -68,6 +69,18 @@ test("lightweight source rows are skipped for highlighted, diff, and preview vie
 });
 
 test("markdown preview links carry PDF page fragments", () => {
-  assert.match(source, /parsePdfPageFragment/);
-  assert.match(source, /onOpenFile\(linkedFile, parsePdfPageFragment\(href\) \?\? undefined\)/);
+  // The link handling lives in markdown-document.tsx, which the preview and the
+  // WYSIWYG editor share.
+  assert.match(documentSource, /parsePdfPageFragment/);
+  assert.match(documentSource, /onOpenFile\(linkedFile, parsePdfPageFragment\(href\) \?\? undefined\)/);
+});
+
+test("the editor preserves the raw markdown targets it resolves", () => {
+  // The resolved /api/files/... URL is what the browser can use; the raw target
+  // rides along so a save writes back what the file had.
+  assert.match(documentSource, /data-md-href=\{href\}/);
+  assert.match(documentSource, /data-md-href=\{typeof src === "string" \? src : undefined\}/);
+  // In an editable block a link places the caret instead of navigating, and the
+  // raw target is only kept in that mode.
+  assert.match(documentSource, /if \(editable\) \{[\s\S]*?placeCaretFromPoint\(event\.clientX, event\.clientY\)/);
 });

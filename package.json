@@ -37,6 +37,7 @@
     "lint": "eslint .",
     "test:terminal": "node e2e/terminal.mjs",
     "test:e2e": "node e2e/run.mjs",
+    "test:e2e:editor": "node e2e/markdown-editor.mjs",
     "test": "node --experimental-strip-types --test \"app/**/*.test.mjs\" \"components/**/*.test.mjs\" \"hooks/**/*.test.mjs\" \"lib/**/*.test.mjs\" \"public/**/*.test.mjs\"",
     "release": "npm version patch --no-git-tag-version && npm run build && npm publish --access public"
   },
@@ -66,6 +67,7 @@
     "@types/react-dom": "^19",
     "@types/react-syntax-highlighter": "^15.5.13",
     "@types/semver": "7.8.0",
+    "@types/turndown": "^5.0.6",
     "@types/web-push": "^3.6.4",
     "ansi_up": "^6.0.6",
     "eslint": "^9",
@@ -84,7 +86,11 @@
     "remark-frontmatter": "^5.0.0",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
+    "remark-parse": "^11.0.0",
     "tailwindcss": "^4.2.2",
-    "typescript": "^5"
+    "turndown": "^7.2.4",
+    "turndown-plugin-gfm": "^1.0.2",
+    "typescript": "^5",
+    "unified": "^11.0.5"
   }
 }
